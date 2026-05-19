@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import signal
 import sys
 
 from xiaozhi_claude_mcp.config import load_config
@@ -105,15 +104,21 @@ class XiaozhiClaudeMCPServer:
         elif method == "tools/call":
             tool_name = req.params.get("name", "")
             arguments = req.params.get("arguments", {})
+            logger.info("tools/call: %s args=%s", tool_name, arguments)
 
             try:
                 result = await self._call_tool(tool_name, arguments)
+                logger.info("tools/call result: %s -> %s", tool_name,
+                            json.dumps(result, ensure_ascii=False)[:200])
                 await self.transport.send_response(req.id, {
                     "content": make_text_content(json.dumps(result)),
                 })
             except Exception as e:
                 logger.error("Tool %s failed: %s", tool_name, e)
                 await self.transport.send_error(req.id, -32000, str(e))
+
+        elif method == "ping":
+            await self.transport.send_response(req.id, {})
 
         else:
             await self.transport.send_error(req.id, -32601, f"Unknown method: {method}")
@@ -182,33 +187,29 @@ class XiaozhiClaudeMCPServer:
     async def shutdown(self) -> None:
         logger.info("Shutting down...")
         self._running = False
-        if self.transport.state == TransportState.CONNECTED:
-            await self.transport.disconnect()
+        try:
+            if self.transport.state == TransportState.CONNECTED:
+                await self.transport.disconnect()
+        except Exception:
+            pass
 
 
-def main():
+async def _main():
     if len(sys.argv) < 2:
         print("Usage: python -m xiaozhi_claude_mcp.server <config.yaml>")
         sys.exit(1)
 
     server = XiaozhiClaudeMCPServer(sys.argv[1])
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    def _sig_handler():
-        logger.info("Signal received")
-        asyncio.ensure_future(server.shutdown())
-
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _sig_handler)
-
     try:
-        loop.run_until_complete(server.run())
+        await server.run()
     except KeyboardInterrupt:
-        pass
+        logger.info("Interrupted")
     finally:
-        loop.close()
+        await server.shutdown()
+
+
+def main():
+    asyncio.run(_main())
 
 
 if __name__ == "__main__":
