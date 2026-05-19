@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
+PROJECTS_DIR = os.path.expanduser("~/.claude/projects")
+CONVERSATION_TAIL_LINES = 20
 
 
 @dataclass
@@ -97,14 +99,54 @@ class StatusMonitor:
 
         if active:
             latest = max(active, key=lambda d: d.get("startedAt", 0))
+            session_id = latest.get("sessionId", "")
+            cwd = latest.get("cwd", "")
+
             hb.msg = f"{hb.total} session(s)"
             entries = []
+
+            # Collect cwd entries
             for s in active:
-                cwd = s.get("cwd", "")
-                entries.append(cwd)
+                entries.append(s.get("cwd", ""))
             hb.entries = entries[-8:]
 
+            # Read recent conversation for the latest session
+            conv_texts = self._read_recent_output(session_id, cwd)
+            if conv_texts:
+                hb.msg = conv_texts[0][:200]
+                # Prepend last few assistant outputs to entries
+                hb.entries = conv_texts[-5:] + hb.entries
+
         return hb
+
+    def _read_recent_output(self, session_id: str, cwd: str) -> list[str]:
+        """Read last few assistant messages from the session conversation file."""
+        if not session_id or not cwd:
+            return []
+        project_name = _project_hash(cwd)
+        conv_path = os.path.join(PROJECTS_DIR, project_name, f"{session_id}.jsonl")
+        if not os.path.exists(conv_path):
+            return []
+
+        texts = []
+        try:
+            # Read last N lines for efficiency
+            with open(conv_path) as f:
+                lines = f.readlines()
+            for line in lines[-CONVERSATION_TAIL_LINES:]:
+                try:
+                    msg = json.loads(line.strip())
+                    if msg.get("type") != "assistant":
+                        continue
+                    content = msg.get("message", {}).get("content", [])
+                    text = _extract_text(content)
+                    if text:
+                        texts.append(text)
+                except (json.JSONDecodeError, KeyError):
+                    pass
+        except OSError:
+            pass
+        return texts
 
     @staticmethod
     def _pid_alive(pid: int) -> bool:
@@ -114,7 +156,9 @@ class StatusMonitor:
         except (OSError, ProcessLookupError):
             return False
 
+
     def _build_heartbeat(self, raw_output: str) -> Heartbeat:
+        """Parse claude -p --output-format json output (kept for tests)."""
         try:
             data = json.loads(raw_output)
             result_text = data.get("result", "")
@@ -127,3 +171,34 @@ class StatusMonitor:
             )
         except (json.JSONDecodeError, KeyError):
             return Heartbeat()
+
+
+def _project_hash(cwd: str) -> str:
+    return cwd.replace("/", "-")
+
+
+def _extract_text(content) -> str:
+    """Extract human-readable text from Claude message content blocks."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            t = block.get("type", "")
+            if t == "text":
+                parts.append(block.get("text", ""))
+            elif t == "tool_use":
+                name = block.get("name", "?")
+                inp = block.get("input", {})
+                if isinstance(inp, dict):
+                    hint = str(inp.get("command", inp.get("file_path", str(inp))))[:80]
+                else:
+                    hint = str(inp)[:80]
+                parts.append(f"[{name}] {hint}")
+            elif t == "thinking":
+                th = block.get("thinking", "")
+                parts.append(th)
+        return " ".join(parts)
+    return ""
