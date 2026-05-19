@@ -39,7 +39,7 @@ TOOL_SCHEMAS = [
                 },
                 "session_id": {
                     "type": "string",
-                    "description": "可选，上次对话返回的session_id，用于继续之前的对话",
+                    "description": "可选。必须从 claude.status 返回的 session_id 字段中获取，不要自己编造。不填则开始新对话。",
                 },
             },
             "required": ["prompt"],

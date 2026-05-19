@@ -135,6 +135,10 @@ class XiaozhiClaudeMCPServer:
         elif name == "claude.send_message":
             prompt = args["prompt"]
             session_id = args.get("session_id")
+            # Validate session_id — must look like a UUID
+            if session_id and not _looks_like_uuid(session_id):
+                logger.warning("Invalid session_id '%s', starting new session", session_id)
+                session_id = None
             resp = await self.claude.send(prompt, session_id=session_id)
             await self.transport.send_notification(
                 "notifications/claude_turn",
@@ -209,6 +213,11 @@ async def _main():
         logger.info("Interrupted")
     finally:
         await server.shutdown()
+
+
+def _looks_like_uuid(s: str) -> bool:
+    """Quick check: UUIDs are 36 chars with dashes like xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx."""
+    return len(s) >= 32 and "-" in s
 
 
 def main():
