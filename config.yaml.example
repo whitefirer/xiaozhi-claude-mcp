@@ -1,0 +1,10 @@
+server:
+  xiaozhi_endpoint: "wss://api.xiaozhi.me/mcp/?token=YOUR_JWT_TOKEN"
+  reconnect_interval: 5
+
+claude:
+  binary: "claude"
+  perm_dir: "/tmp/claude-xiaozhi-perms"
+
+status:
+  poll_interval_sec: 5
