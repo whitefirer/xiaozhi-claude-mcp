@@ -1,0 +1,1 @@
+"""MCP server connecting Claude Code to xiaozhi.me."""
