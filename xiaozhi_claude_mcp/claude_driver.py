@@ -28,6 +28,21 @@ class ClaudeDriver:
         max_turns: int = 10,
         allowed_tools: list[str] | None = None,
     ) -> ClaudeResponse:
+        # First attempt with --resume if session_id provided
+        if session_id:
+            try:
+                return await self._run(prompt, session_id, max_turns, allowed_tools)
+            except RuntimeError:
+                logger.warning("--resume %s failed, starting new session", session_id)
+        return await self._run(prompt, None, max_turns, allowed_tools)
+
+    async def _run(
+        self,
+        prompt: str,
+        session_id: str | None,
+        max_turns: int,
+        allowed_tools: list[str] | None,
+    ) -> ClaudeResponse:
         cmd = self._build_command(prompt, session_id, max_turns, allowed_tools)
         logger.info("Running: %s", " ".join(cmd))
         proc = await asyncio.create_subprocess_exec(

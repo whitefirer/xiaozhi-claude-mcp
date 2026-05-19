@@ -17,7 +17,6 @@ class Heartbeat:
     waiting: int = 0
     msg: str = ""
     entries: list[str] = field(default_factory=list)
-    session_id: str = ""
     tokens: int = 0
     tokens_today: int = 0
     prompt: dict | None = None
@@ -29,7 +28,6 @@ class Heartbeat:
             "waiting": self.waiting,
             "msg": self.msg,
             "entries": self.entries,
-            "session_id": self.session_id,
             "tokens": self.tokens,
             "tokens_today": self.tokens_today,
         }
@@ -100,7 +98,6 @@ class StatusMonitor:
         if active:
             latest = max(active, key=lambda d: d.get("startedAt", 0))
             hb.msg = f"{hb.total} session(s)"
-            hb.session_id = latest.get("sessionId", "")
             entries = []
             for s in active:
                 cwd = s.get("cwd", "")
