@@ -15,6 +15,7 @@ from xiaozhi_claude_mcp.config import load_config
 from xiaozhi_claude_mcp.protocol import (
     parse_jsonrpc,
     JsonRpcRequest,
+    JsonRpcNotification,
 )
 from xiaozhi_claude_mcp.transport import XiaozhiTransport, TransportState
 from xiaozhi_claude_mcp.mcp_tools import get_tools_list, make_text_content
@@ -72,9 +73,12 @@ class XiaozhiClaudeMCPServer:
 
     async def _handle_session(self) -> None:
         while self._running and self.transport.state == TransportState.CONNECTED:
-            envelope = await self.transport.recv()
-            payload = envelope.payload
-            parsed = parse_jsonrpc(payload)
+            raw = await self.transport.recv()
+            parsed = parse_jsonrpc(raw)
+
+            if isinstance(parsed, JsonRpcNotification):
+                logger.debug("Notification: %s", parsed.method)
+                continue
 
             if isinstance(parsed, JsonRpcRequest):
                 await self._handle_request(parsed)

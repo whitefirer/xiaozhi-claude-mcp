@@ -18,6 +18,12 @@ class JsonRpcRequest:
 
 
 @dataclass
+class JsonRpcNotification:
+    method: str
+    params: dict = field(default_factory=dict)
+
+
+@dataclass
 class JsonRpcResponse:
     id: Any
     result: dict | None = None
@@ -66,13 +72,17 @@ def encode_jsonrpc_notification(method: str, params: dict) -> dict:
     return {"jsonrpc": "2.0", "method": method, "params": params}
 
 
-def parse_jsonrpc(raw: dict) -> JsonRpcRequest | JsonRpcResponse:
+def parse_jsonrpc(raw: dict) -> JsonRpcRequest | JsonRpcNotification | JsonRpcResponse:
     if "method" in raw and "result" not in raw and "error" not in raw:
-        id_val = raw.get("id")
-        return JsonRpcRequest(
+        if "id" in raw:
+            return JsonRpcRequest(
+                method=raw["method"],
+                params=raw.get("params", {}),
+                id=raw["id"],
+            )
+        return JsonRpcNotification(
             method=raw["method"],
             params=raw.get("params", {}),
-            id=id_val if id_val is not None else None,
         )
     return JsonRpcResponse(
         id=raw.get("id"),
