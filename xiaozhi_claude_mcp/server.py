@@ -41,7 +41,10 @@ class XiaozhiClaudeMCPServer:
             self.config.server.reconnect_interval,
         )
         self.claude = ClaudeDriver(binary=self.config.claude.binary)
-        self.status_monitor = StatusMonitor()
+        self.status_monitor = StatusMonitor(
+            exclude_paths=self.config.status.exclude_paths,
+            exclude_kinds=self.config.status.exclude_kinds,
+        )
         self._running = False
         self._pending_perm_check_task: asyncio.Task | None = None
 

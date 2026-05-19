@@ -37,8 +37,12 @@ class Heartbeat:
 
 
 class StatusMonitor:
-    def __init__(self, claude_binary: str = "claude"):
+    def __init__(self, claude_binary: str = "claude",
+                 exclude_paths: list[str] | None = None,
+                 exclude_kinds: list[str] | None = None):
         self.claude_binary = claude_binary
+        self.exclude_paths = exclude_paths or []
+        self.exclude_kinds = exclude_kinds or []
         self._last_heartbeat = Heartbeat()
 
     def get_heartbeat(self, pending_permissions: list | None = None) -> Heartbeat:
@@ -70,10 +74,19 @@ class StatusMonitor:
                     with open(path) as f:
                         data = json.load(f)
                     pid = data.get("pid")
-                    if pid and self._pid_alive(pid):
-                        active.append(data)
-                    else:
+                    if not pid or not self._pid_alive(pid):
                         logger.debug("Session %s pid=%s not alive", name, pid)
+                        continue
+
+                    cwd = data.get("cwd", "")
+                    kind = data.get("kind", "")
+
+                    if any(p in cwd for p in self.exclude_paths):
+                        continue
+                    if kind in self.exclude_kinds:
+                        continue
+
+                    active.append(data)
                 except (json.JSONDecodeError, OSError):
                     pass
         except OSError:

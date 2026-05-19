@@ -8,3 +8,6 @@ claude:
 
 status:
   poll_interval_sec: 5
+  exclude_paths:
+    - claude-mem
+  exclude_kinds: []

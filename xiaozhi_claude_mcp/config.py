@@ -17,6 +17,8 @@ class ClaudeConfig:
 @dataclass
 class StatusConfig:
     poll_interval_sec: int = 5
+    exclude_paths: list[str] = field(default_factory=list)
+    exclude_kinds: list[str] = field(default_factory=list)
 
 
 @dataclass
