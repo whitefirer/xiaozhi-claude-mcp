@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import logging
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+SESSIONS_DIR = os.path.expanduser("~/.claude/sessions")
 
 
 @dataclass
@@ -39,7 +42,7 @@ class StatusMonitor:
         self._last_heartbeat = Heartbeat()
 
     def get_heartbeat(self, pending_permissions: list | None = None) -> Heartbeat:
-        hb = Heartbeat()
+        hb = self._detect_sessions()
         if pending_permissions:
             hb.waiting = len(pending_permissions)
             if pending_permissions:
@@ -51,6 +54,53 @@ class StatusMonitor:
                 }
         self._last_heartbeat = hb
         return hb
+
+    def _detect_sessions(self) -> Heartbeat:
+        hb = Heartbeat()
+        if not os.path.isdir(SESSIONS_DIR):
+            return hb
+
+        active = []
+        try:
+            for name in os.listdir(SESSIONS_DIR):
+                if not name.endswith(".json"):
+                    continue
+                path = os.path.join(SESSIONS_DIR, name)
+                try:
+                    with open(path) as f:
+                        data = json.load(f)
+                    pid = data.get("pid")
+                    if pid and self._pid_alive(pid):
+                        active.append(data)
+                    else:
+                        logger.debug("Session %s pid=%s not alive", name, pid)
+                except (json.JSONDecodeError, OSError):
+                    pass
+        except OSError:
+            return hb
+
+        hb.total = len(active)
+        hb.running = len(active)
+
+        if active:
+            latest = max(active, key=lambda d: d.get("startedAt", 0))
+            hb.msg = f"{hb.total} session(s)"
+            entries = []
+            for s in active:
+                cwd = s.get("cwd", "")
+                kind = s.get("kind", "")
+                entries.append(f"{kind} @ {cwd}")
+            hb.entries = entries[-8:]
+
+        return hb
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
 
     def _build_heartbeat(self, raw_output: str) -> Heartbeat:
         try:
