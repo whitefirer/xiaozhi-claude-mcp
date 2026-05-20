@@ -8,7 +8,6 @@ server:
   reconnect_interval: 5
 
 claude:
-  binary: "claude"
   perm_dir: "/tmp/claude-xiaozhi-perms"
 
 status:
@@ -24,7 +23,7 @@ def test_load_config_from_file():
         cfg = load_config(path)
         assert cfg.server.xiaozhi_endpoint == "wss://xiaozhi.me/mcp/agent/abc123"
         assert cfg.server.reconnect_interval == 5
-        assert cfg.claude.binary == "claude"
+        assert cfg.claude.perm_dir == "/tmp/claude-xiaozhi-perms"
         assert cfg.claude.perm_dir == "/tmp/claude-xiaozhi-perms"
         assert cfg.status.poll_interval_sec == 5
     finally:
@@ -42,7 +41,7 @@ server:
     try:
         cfg = load_config(path)
         assert cfg.server.reconnect_interval == 5
-        assert cfg.claude.binary == "claude"
+        assert cfg.claude.perm_dir == "/tmp/claude-xiaozhi-perms"
         assert cfg.claude.perm_dir == "/tmp/claude-xiaozhi-perms"
         assert cfg.status.poll_interval_sec == 5
     finally:

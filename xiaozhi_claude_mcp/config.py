@@ -10,7 +10,6 @@ class ServerConfig:
 
 @dataclass
 class ClaudeConfig:
-    binary: str = "claude"
     perm_dir: str = "/tmp/claude-xiaozhi-perms"
 
 
@@ -35,6 +34,7 @@ def load_config(path: str) -> Config:
     server = ServerConfig(**raw["server"])
 
     claude_raw = raw.get("claude", {})
+    claude_raw.pop("binary", None)  # removed, was for old ClaudeDriver
     claude = ClaudeConfig(**claude_raw) if claude_raw else ClaudeConfig()
 
     status_raw = raw.get("status", {})

@@ -103,6 +103,8 @@ class StatusMonitor:
             cwd = latest.get("cwd", "")
 
             hb.msg = f"{hb.total} session(s)"
+            if cwd:
+                hb.msg += f", latest: {os.path.basename(cwd) if cwd != '/' else '/'}"
             entries = []
 
             # Collect cwd entries
@@ -113,7 +115,6 @@ class StatusMonitor:
             # Read recent conversation for the latest session
             conv_texts = self._read_recent_output(session_id, cwd)
             if conv_texts:
-                hb.msg = conv_texts[0][:200]
                 # Prepend last few assistant outputs to entries
                 hb.entries = conv_texts[-5:] + hb.entries
 

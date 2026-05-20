@@ -12,10 +12,11 @@ TOOL_SCHEMAS = [
     {
         "name": "claude.status",
         "description": (
-            "查看电脑上正在运行的 Claude Code（AI编程助手）的状态。"
-            "当用户问「Claude Code在干嘛」「AI助手在做什么」「编程助手状态」「电脑上的AI在跑什么」"
-            "「claude状态」「看下代码助手」时必须调用此工具。"
-            "返回当前会话数、工作目录、是否有待审批的操作等信息。"
+            "查看 Claude Code 运行状态（会话数、待审批操作数等）。"
+            "响应中 waiting 字段表示待审批操作数量，prompt 字段包含具体的权限请求（permission_id、tool、hint）。"
+            "如有待审批操作，询问用户后，用 claude.approve 或 claude.deny 处理。"
+            "⚠️ 仅用于回答「AI在干嘛」「电脑上有什么在跑」「有待审批吗」这类状态问题。"
+            "⚠️ 不要为了发送消息而先调此工具——直接调 claude.send_message！"
         ),
         "inputSchema": {
             "type": "object",
@@ -25,10 +26,13 @@ TOOL_SCHEMAS = [
     {
         "name": "claude.send_message",
         "description": (
-            "把用户说的话发送给电脑上的 Claude Code（AI编程助手），让Claude Code来回答或执行编程任务。"
-            "当用户明确要对「Claude Code」「AI编程助手」「代码助手」「claude」说话、提问、下指令时必须调用此工具。"
-            "用户问编程问题、让AI写代码、分析代码、修bug、操作文件时，都应该调用此工具而不是让小智自己回答。"
-            "参数prompt是用户原始问题的完整文本，不要改写或总结。"
+            "将用户的话发送给电脑上的 Claude Code，让 AI 编程助手来回答或执行任务。"
+            "自动启动 Claude Code，无需事先检查状态，无需获取 session_id。"
+            "⚠️ 这是让 Claude Code 响应用户的唯一方法。"
+            "以下情况必须调用此工具（不要先调 claude.status）："
+            "用户想对电脑上的AI说话、让AI帮忙、问编程问题、分析代码、写代码、修bug、"
+            "操作文件、执行命令、解释项目、查看代码——总之只要用户想让AI做事，就调此工具。"
+            "参数 prompt：用户原始问题的完整文本，一字不改。"
         ),
         "inputSchema": {
             "type": "object",
@@ -39,7 +43,11 @@ TOOL_SCHEMAS = [
                 },
                 "session_id": {
                     "type": "string",
-                    "description": "可选。必须从 claude.status 返回的 session_id 字段中获取，不要自己编造。不填则开始新对话。",
+                    "description": "⚠️ 会话ID，不是项目名！只能用上一次 claude.send_message 返回结果里的 session_id 值（类似 961208df-23ba-46db-9014-6214497c5b1e 这种格式）。没有就留空，不要填任何其他值。",
+                },
+                "max_turns": {
+                    "type": "integer",
+                    "description": "可选，默认2。简单问题用1就够了，需要读写文件或执行命令的任务用5-7。",
                 },
             },
             "required": ["prompt"],
@@ -53,7 +61,7 @@ TOOL_SCHEMAS = [
             "properties": {
                 "permission_id": {
                     "type": "string",
-                    "description": "The permission request ID from claude.notify_permission",
+                    "description": "The permission request ID from the prompt field in claude.status",
                 },
             },
             "required": ["permission_id"],
@@ -67,7 +75,7 @@ TOOL_SCHEMAS = [
             "properties": {
                 "permission_id": {
                     "type": "string",
-                    "description": "The permission request ID from claude.notify_permission",
+                    "description": "The permission request ID from the prompt field in claude.status",
                 },
             },
             "required": ["permission_id"],
@@ -75,7 +83,12 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "claude.notify_permission",
-        "description": "[Notification] Push a permission request to xiaozhi when Claude Code needs approval for a tool call.",
+        "description": (
+            "[服务端推送通知，不要主动调用] "
+            "当 Claude Code 需要你审批工具调用时，你会收到此通知。"
+            "通知中包含 permission_id、tool、hint 三个字段。"
+            "收到后用 claude.approve 或 claude.deny 回应。"
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -96,7 +109,10 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "claude.notify_turn",
-        "description": "[Notification] Push a completed Claude Code turn to xiaozhi with the assistant's response.",
+        "description": (
+            "[服务端推送通知，不要主动调用] "
+            "Claude Code 完成一轮操作后，你会收到此通知，包含 AI 的回复内容和 session_id。"
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {

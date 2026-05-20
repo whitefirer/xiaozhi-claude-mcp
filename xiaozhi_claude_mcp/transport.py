@@ -3,12 +3,24 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from enum import Enum, auto
 
 import websockets
 from websockets.asyncio.client import ClientConnection
 
 logger = logging.getLogger(__name__)
+
+
+def _redact_url(url: str) -> str:
+    """Redact token query parameter for safe logging.
+    Shows first 2 and last 2 chars so the token can be eyeball-verified."""
+    def _redact_token(m: re.Match) -> str:
+        token = m.group(2)
+        if len(token) <= 6:
+            return f"{m.group(1)}***"
+        return f"{m.group(1)}{token[:2]}***{token[-2:]}"
+    return re.sub(r"(token=)([^&]+)", _redact_token, url)
 
 
 class TransportState(Enum):
@@ -28,7 +40,7 @@ class XiaozhiTransport:
 
     async def connect(self) -> None:
         self.state = TransportState.CONNECTING
-        logger.info("Connecting to %s", self.endpoint)
+        logger.info("Connecting to %s", _redact_url(self.endpoint))
         try:
             self._ws = await websockets.connect(
                 self.endpoint,
