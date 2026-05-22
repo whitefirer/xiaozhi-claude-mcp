@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-PreToolUse hook for Claude Code.
+PermissionRequest hook for Claude Code — record, then ask.
 
-Reads tool call info from stdin (Claude Code passes JSON with tool_name, tool_input).
-Writes permission request file for MCP Server.
-Polls for result file. Exits 0 (allow) or 2 (block).
+Reads tool call info from stdin, writes permission request file for MCP Server,
+returns {behavior: ask} so Claude Code shows its native permission dialog.
+The dialog is answered via PTY keystroke (1=approve, 3=deny).
 """
 import json
 import os
@@ -12,20 +12,21 @@ import sys
 import time
 import logging
 
+PERM_DIR = "/tmp/claude-xiaozhi-perms"
+
+os.makedirs(PERM_DIR, exist_ok=True)
+
 logging.basicConfig(
     level=logging.DEBUG,
-    filename="/tmp/claude-xiaozhi-perms/hook.log",
+    filename=os.path.join(PERM_DIR, "hook.log"),
     format="%(asctime)s %(message)s",
 )
 logger = logging.getLogger("permission_hook")
 
-PERM_DIR = "/tmp/claude-xiaozhi-perms"
-POLL_MS = 200
-TIMEOUT_S = 86400
-
 
 def main():
-    os.makedirs(PERM_DIR, exist_ok=True)
+    if not os.environ.get("XIAOZHI_PERMISSION_HOOK"):
+        sys.exit(0)
 
     try:
         input_data = json.loads(sys.stdin.read())
@@ -52,32 +53,10 @@ def main():
         json.dump(data, f)
     logger.info("Request written: %s (%s)", permission_id, hint)
 
-    result_path = os.path.join(PERM_DIR, f"{permission_id}.result.json")
-    deadline = time.time() + TIMEOUT_S
-
-    while time.time() < deadline:
-        if os.path.exists(result_path):
-            try:
-                with open(result_path) as f:
-                    result = json.loads(f.read())
-                decision = result.get("decision", False)
-                logger.info("Decision: %s = %s", permission_id, decision)
-                for p in (req_path, result_path):
-                    if os.path.exists(p):
-                        os.unlink(p)
-                if decision:
-                    sys.exit(0)
-                else:
-                    sys.exit(2)
-            except (json.JSONDecodeError, KeyError):
-                pass
-        time.sleep(POLL_MS / 1000.0)
-
-    logger.warning("Timeout for %s", permission_id)
-    for p in (req_path, result_path):
-        if os.path.exists(p):
-            os.unlink(p)
-    sys.exit(2)
+    # Exit 0 without hookSpecificOutput — let Claude Code show its native
+    # permission dialog. xiaozhi user approves/denies → claude.approve/claude.deny
+    # → PTY write_raw("1\r"/"3\r") answers the dialog.
+    sys.exit(0)
 
 
 def _make_hint(tool_name: str, tool_input: dict) -> str:

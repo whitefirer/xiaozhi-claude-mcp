@@ -66,6 +66,7 @@ class PTYSession:
                 os.chdir(self.cwd)
             except OSError:
                 pass
+            os.environ["XIAOZHI_PERMISSION_HOOK"] = "1"
             os.execvp("claude", ["claude"])
             os._exit(1)
 

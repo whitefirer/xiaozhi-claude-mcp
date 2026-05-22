@@ -82,23 +82,25 @@ class HookServer:
             body = {}
         content = body.get("content", "")
         sid = body.get("session_id", "")
-        hook_pid = body.get("claude_pid", 0)
-        pty_pid = self._pty_session.pid
-        logger.info("Stop hook fired, content=%d chars session=%s pid=%s",
-                    len(content), sid[:8], hook_pid)
+        logger.info("Stop hook fired, content=%d chars session=%s",
+                    len(content), sid[:8] if sid else "?")
 
-        # Filter by PID — multiple Claude sessions share same hook config
-        if pty_pid and hook_pid and hook_pid != pty_pid:
+        pty_sid = self._pty_session.session_id
+        if pty_sid and sid and sid != pty_sid:
             logger.warning(
-                "Ignoring Stop hook from foreign pid=%s (ours=%s session=%s)",
-                hook_pid, pty_pid, sid[:8],
+                "Ignoring Stop hook from foreign session=%s (ours=%s)",
+                sid[:8], pty_sid[:8],
             )
-            return web.json_response({"status": "wrong process"}, status=409)
+            return web.json_response({"status": "wrong session"}, status=409)
 
-        # Capture session_id for display (first successful hook)
-        if sid and not self._pty_session.session_id:
+        if sid and not pty_sid:
+            # Only bind to first hook during an active turn (PTY BUSY)
+            if self._pty_session.state.name != "BUSY":
+                logger.info("Ignoring hook during idle (session=%s), waiting for turn",
+                           sid[:8])
+                return web.json_response({"status": "not waiting"}, status=409)
             self._pty_session.session_id = sid
-            logger.info("Captured PTY session_id: %s", sid[:8])
+            logger.info("Bound PTY to session_id: %s", sid[:8])
 
         self._pty_session.notify_turn_complete(output_hint=content)
         return web.json_response({"status": "ok"})
@@ -111,13 +113,12 @@ class HookServer:
         except Exception:
             body = {}
         sid = body.get("session_id", "")
-        hook_pid = body.get("claude_pid", 0)
-        pty_pid = self._pty_session.pid
-        logger.warning("StopFailure hook fired session=%s pid=%s", sid[:8] if sid else "?", hook_pid)
+        logger.warning("StopFailure hook fired session=%s", sid[:8] if sid else "?")
 
-        if pty_pid and hook_pid and hook_pid != pty_pid:
-            logger.warning("Ignoring StopFailure from foreign pid=%s", hook_pid)
-            return web.json_response({"status": "wrong process"}, status=409)
+        pty_sid = self._pty_session.session_id
+        if pty_sid and sid and sid != pty_sid:
+            logger.warning("Ignoring StopFailure from foreign session=%s", sid[:8])
+            return web.json_response({"status": "wrong session"}, status=409)
 
         self._pty_session.notify_turn_complete(output_hint="[Claude error]")
         return web.json_response({"status": "ok"})

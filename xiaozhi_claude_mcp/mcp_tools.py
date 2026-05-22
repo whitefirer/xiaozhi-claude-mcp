@@ -12,11 +12,20 @@ TOOL_SCHEMAS = [
     {
         "name": "claude.status",
         "description": (
-            "查看 Claude Code 运行状态（会话数、待审批操作数等）。"
-            "响应中 waiting 字段表示待审批操作数量，prompt 字段包含具体的权限请求（permission_id、tool、hint）。"
-            "如有待审批操作，询问用户后，用 claude.approve 或 claude.deny 处理。"
-            "⚠️ 仅用于回答「AI在干嘛」「电脑上有什么在跑」「有待审批吗」这类状态问题。"
-            "⚠️ 不要为了发送消息而先调此工具——直接调 claude.send_message！"
+            "查看 Claude Code 运行状态。"
+            "响应字段："
+            "  total: 当前会话总数"
+            "  waiting: 待审批的权限请求数量（Claude在等用户批准工具调用）"
+            "  pending_tasks: 正在后台执行的异步任务数（发送消息后的处理任务）"
+            "  prompt: 具体权限请求列表（permission_id、tool、hint）"
+            "  pty: PTY会话状态（idle/busy/error）"
+            "⚠️ 当 waiting > 0 时，必须逐一列出每个权限请求（tool和hint），逐条问用户「批准还是拒绝？」。"
+            "  用户说「批准/同意/允许/可以」→ 立即调 claude.approve"
+            "  用户说「拒绝/不行/不允许」→ 立即调 claude.deny"
+            "  permission_id 在 permission_requests 数组的每一项中。"
+            "⚠️ 当 pending_tasks = 0 且 waiting = 0 时，Claude空闲无任务。"
+            "⚠️ 不要为发消息而先调此工具——直接调 claude.send_message！"
+            "⚠️ 涉及编程助手状态时，说话简洁精确，不啰嗦。"
         ),
         "inputSchema": {
             "type": "object",
@@ -26,42 +35,69 @@ TOOL_SCHEMAS = [
     {
         "name": "claude.send_message",
         "description": (
-            "将用户的话发送给电脑上的 Claude Code，让 AI 编程助手来回答或执行任务。"
-            "自动启动 Claude Code，无需事先检查状态，无需获取 session_id。"
-            "⚠️ 这是让 Claude Code 响应用户的唯一方法。"
-            "以下情况必须调用此工具（不要先调 claude.status）："
-            "用户想对电脑上的AI说话、让AI帮忙、问编程问题、分析代码、写代码、修bug、"
-            "操作文件、执行命令、解释项目、查看代码——总之只要用户想让AI做事，就调此工具。"
-            "参数 prompt：用户原始问题的完整文本，一字不改。"
+            "将用户的话发送给电脑上的 Claude Code 处理。异步操作——调用后立即返回任务ID。"
+            "Claude 在后台处理，完成后通过 claude.get_result 获取回复。"
+            "流程："
+            "  1. 调用 claude.send_message(prompt) → 获得 task_id"
+            "  2. 告诉用户「正在让Claude处理你的问题，稍等片刻...」"
+            "  3. 后续用户问结果时，调 claude.get_result(task_id) 拉取"
+            "⚠️ 不要等！不要反复调 claude.status 轮询——下次用户主动问时才查。"
+            "⚠️ session_id 填上次返回的，没有就留空。"
+            "⚠️ max_turns 控制 Claude 执行轮数，默认2。简单问题1，读写文件5-7。"
+            "⚠️ 转述Claude回复时简洁精确，不加废话不润色。"
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "prompt": {
                     "type": "string",
-                    "description": "用户对Claude Code说的完整原始问题，一字不改地传递。例如「帮我分析src/main.py的性能问题」「看看这个项目有哪些bug」",
+                    "description": "用户对Claude Code说的完整原始问题，一字不改。",
                 },
                 "session_id": {
                     "type": "string",
-                    "description": "⚠️ 会话ID，不是项目名！只能用上一次 claude.send_message 返回结果里的 session_id 值（类似 961208df-23ba-46db-9014-6214497c5b1e 这种格式）。没有就留空，不要填任何其他值。",
+                    "description": "上次 claude.send_message 返回的 session_id，没有就留空。",
                 },
                 "max_turns": {
                     "type": "integer",
-                    "description": "可选，默认2。简单问题用1就够了，需要读写文件或执行命令的任务用5-7。",
+                    "description": "Claude执行轮数上限，默认2，最大10。简单问题用1。",
                 },
             },
             "required": ["prompt"],
         },
     },
     {
+        "name": "claude.get_result",
+        "description": (
+            "获取 claude.send_message 异步任务的处理结果。"
+            "传入 task_id（来自 send_message 的返回值），获取 Claude 的回复。"
+            "如果任务还在处理中，返回 status: pending 和 preview（终端实时画面），可据此告诉用户进度。"
+            "如果任务完成，返回 status: done 和 Claude 的回复内容。"
+            "⚠️ 拿到结果后简洁转述，不添加无关解释。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "claude.send_message 返回的 task_id",
+                },
+            },
+            "required": ["task_id"],
+        },
+    },
+    {
         "name": "claude.approve",
-        "description": "Approve a pending permission request. The Claude Code tool call will be allowed to proceed.",
+        "description": (
+            "【批准/同意/允许/可以】批准权限请求。"
+            "用户表示批准时调用此工具。"
+            "permission_id 取 claude.status 返回的 permission_requests[].permission_id。"
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "permission_id": {
                     "type": "string",
-                    "description": "The permission request ID from the prompt field in claude.status",
+                    "description": "来自 claude.status 的 permission_requests 数组中的 permission_id",
                 },
             },
             "required": ["permission_id"],
@@ -69,13 +105,17 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "claude.deny",
-        "description": "Deny a pending permission request. The Claude Code tool call will be blocked.",
+        "description": (
+            "【拒绝/不行/不允许/不批准/不同意】拒绝权限请求。"
+            "用户表示拒绝、不批准或不同意时调用此工具。"
+            "permission_id 取 claude.status 返回的 permission_requests[].permission_id。"
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "permission_id": {
                     "type": "string",
-                    "description": "The permission request ID from the prompt field in claude.status",
+                    "description": "来自 claude.status 的 permission_requests 数组中的 permission_id",
                 },
             },
             "required": ["permission_id"],

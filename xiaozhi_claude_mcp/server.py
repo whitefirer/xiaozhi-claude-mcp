@@ -11,6 +11,8 @@ import json
 import logging
 import os
 import sys
+import time
+import uuid
 
 from xiaozhi_claude_mcp.config import load_config
 from xiaozhi_claude_mcp.protocol import (
@@ -54,6 +56,8 @@ class XiaozhiClaudeMCPServer:
         self._pending_tool_tasks: set[asyncio.Task] = set()
         self._send_lock = asyncio.Lock()
         self._send_future: asyncio.Future | None = None
+        self._task_results: dict[str, dict] = {}
+        self._task_lock = asyncio.Lock()
 
     async def run(self) -> None:
         self._running = True
@@ -178,9 +182,21 @@ class XiaozhiClaudeMCPServer:
             pending = scan_for_requests(self.config.claude.perm_dir)
             hb = self.status_monitor.get_heartbeat(pending)
             d = hb.to_dict()
-            # Add PTY state so LLM can see if Claude is alive
             if self._pty and self._pty.alive:
                 d["pty"] = self._pty.get_status()
+            async with self._task_lock:
+                pending_tasks = {tid: t for tid, t in self._task_results.items()
+                                 if t["status"] == "pending"}
+                done_tasks = {tid: t for tid, t in self._task_results.items()
+                              if t["status"] == "done" and not t.get("consumed")}
+                d["pending_tasks"] = len(pending_tasks)
+                d["completed_task_ids"] = list(done_tasks.keys())[:5]
+            # Include pending permission details
+            if pending:
+                d["permission_requests"] = [
+                    {"permission_id": r.permission_id, "tool": r.tool, "hint": r.hint}
+                    for r in pending[:10]
+                ]
             return d
 
         elif name == "claude.send_message":
@@ -192,25 +208,63 @@ class XiaozhiClaudeMCPServer:
             if max_turns > 10:
                 max_turns = 10
 
-            async with self._send_lock:
-                if self._send_future is not None and not self._send_future.done():
-                    logger.info("send_message: piggybacking on in-flight request")
-                    future = self._send_future
-                else:
-                    future = asyncio.ensure_future(
-                        self._do_send_message(prompt, session_id, max_turns)
-                    )
-                    self._send_future = future
+            # Reset session binding so next PTY hook establishes correct session
+            if self._pty:
+                self._pty.session_id = ""
+            task_id = str(uuid.uuid4())[:8]
+            async with self._task_lock:
+                self._task_results[task_id] = {
+                    "status": "pending",
+                    "prompt": prompt,
+                    "session_id": session_id,
+                    "max_turns": max_turns,
+                    "created_at": time.time(),
+                }
+            # Start background Claude task
+            asyncio.create_task(self._run_async_send_message(task_id))
+            logger.info("send_message: async task %s started, prompt=%s",
+                        task_id, prompt[:80])
+            return {
+                "status": "processing",
+                "task_id": task_id,
+                "message": f"正在让Claude处理你的问题（任务{task_id}），稍后调用 claude.get_result 获取结果",
+            }
 
-            result = await future
+        elif name == "claude.get_result":
+            task_id = args["task_id"]
+            async with self._task_lock:
+                task = self._task_results.get(task_id)
+                if not task:
+                    return {"status": "not_found", "message": "任务不存在或已过期"}
+                if task["status"] == "pending":
+                    preview = ""
+                    if self._pty and self._pty.alive:
+                        cleaned = self._pty.get_recent_output(raw=False)
+                        preview = cleaned[-300:] if cleaned else ""
+                    return {
+                        "status": "pending",
+                        "message": "任务还在处理中，稍后再查",
+                        "preview": preview,
+                    }
+                if task["status"] == "error":
+                    return {"status": "error", "message": task.get("error", "未知错误")}
+                # Done — mark as consumed so it doesn't clutter status
+                task["consumed"] = True
+                result = {
+                    "status": "done",
+                    "content": task["content"],
+                    "session_id": task.get("session_id", ""),
+                    "task_id": task_id,
+                }
+            # Send claude_turn notification with the result
             try:
                 await self.transport.send_notification(
                     "notifications/claude_turn",
                     {
                         "role": "assistant",
-                        "content": result["content"],
-                        "session_id": result.get("session_id", ""),
-                        "tokens": result.get("tokens", 0),
+                        "content": task["content"],
+                        "session_id": task.get("session_id", ""),
+                        "tokens": 0,
                     },
                 )
             except Exception:
@@ -220,13 +274,15 @@ class XiaozhiClaudeMCPServer:
         elif name == "claude.approve":
             perm_id = args["permission_id"]
             write_permission_result(self.config.claude.perm_dir, perm_id, True)
-            cleanup_request(self.config.claude.perm_dir, perm_id)
+            cleanup_request(self.config.claude.perm_dir, perm_id, keep_result=True)
+            asyncio.create_task(self._auto_answer_pty(b"1\r"))
             return {"ok": True}
 
         elif name == "claude.deny":
             perm_id = args["permission_id"]
             write_permission_result(self.config.claude.perm_dir, perm_id, False)
-            cleanup_request(self.config.claude.perm_dir, perm_id)
+            cleanup_request(self.config.claude.perm_dir, perm_id, keep_result=True)
+            asyncio.create_task(self._auto_answer_pty(b"3\r"))
             return {"ok": True}
 
         elif name in ("claude.notify_permission", "claude.notify_turn"):
@@ -234,6 +290,13 @@ class XiaozhiClaudeMCPServer:
 
         else:
             raise ValueError(f"Unknown tool: {name}")
+
+    async def _auto_answer_pty(self, keys: bytes, delay: float = 0.5) -> None:
+        """Send keystroke to PTY after a delay, for auto-answering permission dialogs."""
+        await asyncio.sleep(delay)
+        if self._pty and self._pty.alive:
+            self._pty.write_raw(keys)
+            logger.info("Auto-answered PTY dialog with keys=%r", keys)
 
     # ── send_message via PTY ───────────────────────────────────
 
@@ -262,6 +325,35 @@ class XiaozhiClaudeMCPServer:
             "tokens": 0,
             "cost_usd": 0,
         }
+
+    async def _run_async_send_message(self, task_id: str) -> None:
+        """Background task: run Claude and store result."""
+        async with self._task_lock:
+            task = self._task_results.get(task_id)
+            if not task:
+                return
+        prompt = task["prompt"]
+        session_id = task.get("session_id", "")
+        max_turns = task.get("max_turns", 2)
+
+        try:
+            result = await self._do_send_message(prompt, session_id, max_turns)
+            async with self._task_lock:
+                if task_id in self._task_results:
+                    self._task_results[task_id].update(
+                        status="done",
+                        content=result["content"],
+                        session_id=result.get("session_id", ""),
+                    )
+            logger.info("Async task %s completed", task_id)
+        except Exception as e:
+            async with self._task_lock:
+                if task_id in self._task_results:
+                    self._task_results[task_id].update(
+                        status="error",
+                        error=str(e),
+                    )
+            logger.error("Async task %s failed: %s", task_id, e)
 
     # ── permission polling ─────────────────────────────────────
 

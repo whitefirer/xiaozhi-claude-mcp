@@ -4,155 +4,127 @@
 
 MCP server that connects to xiaozhi.me's MCP access point, exposing Claude Code management tools. 小智 ESP32 device acts as a physical companion for Claude Code — displaying session state, handling permission approvals, and enabling voice-driven conversation.
 
-Modeled after claude-desktop-buddy, but uses MCP over WebSocket instead of BLE.
-
 ## Architecture
 
 ```
-Claude Code CLI ←→ MCP Server (PC) ←─WSS─→ xiaozhi.me MCP access point ←→ 小智 backend ←→ 小智 ESP32
+Claude Code PTY ←→ MCP Server (PC) ←─WSS─→ xiaozhi.me MCP access point ←→ 小智 backend ←→ 小智 ESP32
+                      │
+                      ├─ Hook Server (:9999) ← POST ─ Stop hook (captures turn output)
+                      │                          └ PermissionRequest hook (records requests)
+                      └─ PTY Session (persistent claude process, no cold start)
 ```
 
-- MCP Server connects OUT to xiaozhi.me's WebSocket endpoint (obtained from xiaozhi.me console)
-- MCP Server manages Claude Code via subprocess (`claude` CLI)
+- MCP Server connects OUT to xiaozhi.me's WebSocket endpoint
+- MCP Server manages Claude Code via persistent PTY session (forked `claude` process)
+- Hook server (aiohttp on :9999) receives Stop and PermissionRequest hook callbacks
+- Stop hook captures Claude's turn output via POST to hook server
+- PermissionRequest hook writes request files to shared perm_dir
 - 小智 backend discovers and calls tools through the MCP access point
-- 小智 ESP32 displays state and captures user input (voice, buttons)
-
-## Transport
-
-xiaozhi MCP envelope format over WebSocket:
-
-```json
-{
-  "session_id": "...",
-  "type": "mcp",
-  "payload": {
-    "jsonrpc": "2.0",
-    "method": "tools/call",
-    "params": { "name": "claude.status", "arguments": {} },
-    "id": 1
-  }
-}
-```
-
-Connection is initiated by MCP Server → xiaozhi.me access point. Reconnect on disconnect with configurable interval.
 
 ## Tools
 
 | Tool | Direction | Purpose |
 |------|-----------|---------|
-| `claude.status` | backend→server | Session counts, token stats, recent output, pending permissions |
-| `claude.send_message` | backend→server | Send prompt to Claude Code, get response |
-| `claude.approve` | backend→server | Approve a pending permission request |
-| `claude.deny` | backend→server | Deny a pending permission request |
-| `claude.notify_permission` | server→backend (notification) | Push permission request to 小智 |
-| `claude.notify_turn` | server→backend (notification) | Push completed Claude turn to 小智 |
+| `claude.status` | backend→server | Session counts, pending tasks, permission requests, PTY state |
+| `claude.send_message` | backend→server | Send prompt to PTY Claude, returns task_id immediately (async) |
+| `claude.get_result` | backend→server | Poll async task result (status + content + preview) |
+| `claude.approve` | backend→server | Approve pending permission, sends "1\r" keystroke to PTY |
+| `claude.deny` | backend→server | Deny pending permission, sends "3\r" keystroke to PTY |
+| `claude.notify_turn` | server→backend | Push completed Claude turn to 小智 (notification) |
 
-### Tool Schemas
+### claude.send_message (async task model)
 
-**claude.status** — returns heartbeat snapshot (modeled after buddy's heartbeat):
+```
+Input:  { "prompt": "...", "session_id": "", "max_turns": 2 }
+Output: { "status": "processing", "task_id": "a1b2c3d4" }
+```
+
+Prompt is written to PTY. Returns immediately with task_id. Background task waits for Stop hook to capture response. Use `claude.get_result(task_id)` to fetch result.
+
+### claude.get_result
+
+```
+Input:  { "task_id": "a1b2c3d4" }
+Output pending: { "status": "pending", "preview": "<recent PTY output>" }
+Output done:    { "status": "done", "content": "...", "session_id": "...", "task_id": "..." }
+Output error:   { "status": "error", "message": "..." }
+Output not_found: { "status": "not_found" }
+```
+
+Done results are marked consumed and won't appear in subsequent claude.status calls.
+
+### claude.status
 
 ```json
 {
-  "total": 3,
-  "running": 1,
+  "total": 2,
+  "running": 2,
   "waiting": 1,
-  "msg": "Analyzing code...",
-  "entries": ["recent output line 1", "recent output line 2"],
-  "tokens": 125000,
-  "tokens_today": 5000,
-  "prompt": { "id": "req_abc", "tool": "bash", "hint": "rm -rf /tmp/*" }
+  "pending_tasks": 0,
+  "completed_task_ids": ["a1b2c3d4"],
+  "permission_requests": [
+    {"permission_id": "sid-Bash-123", "tool": "Bash", "hint": "rm -rf /tmp/*"}
+  ],
+  "pty": {"state": "idle", "pid": 12345, "session_id": "abc123"},
+  "entries": ["recent output line 1", "recent output line 2"]
 }
 ```
 
-**claude.send_message** — send prompt and get response:
+### claude.approve / claude.deny
 
-```json
-// Input
-{ "prompt": "What does this code do?", "session_id": "optional-session-id" }
-
-// Output
-{ "content": "This code handles...", "session_id": "sess_001", "tokens": 1500 }
+```
+Input:  { "permission_id": "sid-Bash-123" }
+Output: { "ok": true }
 ```
 
-**claude.approve / claude.deny** — permission decisions:
-
-```json
-// Input
-{ "permission_id": "req_abc" }
-
-// Output
-{ "ok": true }
-```
-
-**claude.notify_permission** — push notification:
-
-```json
-{
-  "permission_id": "req_abc",
-  "tool": "bash",
-  "hint": "rm -rf /tmp/*"
-}
-```
-
-**claude.notify_turn** — push notification:
-
-```json
-{
-  "role": "assistant",
-  "content": "I'll analyze this code...",
-  "session_id": "sess_001",
-  "tokens": 1500
-}
-```
+Writes result file and sends PTY keystroke (1=approve, 3=deny) to answer Claude Code's native permission dialog.
 
 ## Permission Approval Flow
 
-Uses file semaphore pattern because Claude Code PreToolUse hooks are synchronous with a configurable timeout (set to 86400s).
+Uses PermissionRequest hook (record-only, non-blocking) + PTY keystroke simulation.
 
 ```
-1. Claude Code wants to run Bash("rm -rf /tmp/*")
-2. PreToolUse hook triggered → writes /tmp/claude-xiaozhi-perms/{session_id}.json
-3. MCP Server detects new file → sends claude.notify_permission to 小智
-4. 小智 displays "Allow rm -rf /tmp/*?" on screen
-5. User presses button A (approve) or B (deny) on 小智
-6. 小智 backend calls claude.approve or claude.deny
-7. MCP Server writes /tmp/claude-xiaozhi-perms/{session_id}.result.json
-8. Hook polls for result → exit 0 (allow) or exit 2 (deny)
+1. PTY Claude wants to run Bash("rm -rf /tmp/*")
+2. Claude Code checks built-in permissions → not in allowlist
+3. PermissionRequest hook fires → writes /tmp/claude-xiaozhi-perms/{perm_id}.json
+4. Hook exits 0 (no hookSpecificOutput) → Claude Code shows native permission dialog in PTY
+5. MCP Server detects new file via claude.status polling → shows "waiting: 1"
+6. 小智 displays permission request (tool + hint) on screen
+7. User approves (press A) or denies (press B) on 小智
+8a. APPROVE: 小智 calls claude.approve(perm_id) → server sends "1\r" to PTY → dialog approved
+8b. DENY:    小智 calls claude.deny(perm_id) → server sends "3\r" to PTY → dialog denied
 ```
 
-Hook timeout: 86400s (24h). Hook polls result file every 200ms. On timeout: exit 2 (deny).
+### Key design decisions
 
-File naming uses session_id prefix to avoid cross-session race conditions.
+- **PermissionRequest over PreToolUse**: PreToolUse fires for ALL matching tool calls regardless of whether Claude Code would show a dialog. PermissionRequest only fires when a dialog would actually appear, respecting built-in allowlists.
 
-## Claude Code Integration
+- **Non-blocking hook**: Hook writes request file and exits 0 immediately. Does NOT poll for result. The PTY keystroke simulation is the single gate.
 
-### send_message
+- **Env var guard**: PTY Claude is launched with `XIAOZHI_PERMISSION_HOOK=1`. The permission hook checks this env var — if absent (interactive Claude), exits 0 immediately without recording anything. Prevents noise from the interactive Claude session.
 
-```bash
-claude -p "<prompt>"                    # one-shot
-claude --resume <session_id> -p "<...>" # continue session
-```
+- **Keystroke simulation**: approve sends `1\r` (approve once), deny sends `3\r` (deny). Using `asyncio.create_task` with 0.5s delay to let Claude Code render the dialog.
 
-stdout captured and returned as response content.
-
-### status monitoring
-
-Poll `~/.claude/sessions/` directory for active session metadata. Parse output of `claude status` if available.
-
-### permission hook (PreToolUse)
-
-Configured in `.claude/settings.json`:
+### Hook configuration (~/.claude/settings.json)
 
 ```json
 {
   "hooks": {
-    "PreToolUse": [
+    "PermissionRequest": [
+      {
+        "matcher": "Bash|Write|Edit",
+        "hooks": [{
+          "type": "command",
+          "command": "python3 /path/to/permission_hook.py"
+        }]
+      }
+    ],
+    "Stop": [
       {
         "matcher": "",
         "hooks": [{
           "type": "command",
-          "command": "python /path/to/xiaozhi-claude-mcp/permission_hook.py",
-          "timeout": 86400
+          "command": "python3 /path/to/stop_hook.py"
         }]
       }
     ]
@@ -160,51 +132,79 @@ Configured in `.claude/settings.json`:
 }
 ```
 
+## Claude Code Integration
+
+### PTY Session
+
+Persistent `claude` process via `os.fork()` + `pty.openpty()`. No cold start per request.
+
+- `os.execvp("claude", ["claude"])` — interactive REPL, no `-p` flag
+- Env var `XIAOZHI_PERMISSION_HOOK=1` set before exec for hook session filtering
+- Stop hook captures turn output and POSTs to hook server
+- Hook server (aiohttp, port 9999) binds PTY to session_id on first Stop hook during BUSY state
+- Session_id filtering (not PID) prevents cross-session interference
+
+### send_message via PTY
+
+```
+1. Write prompt bytes + "\r" to PTY master fd
+2. PTY state → BUSY
+3. Wait for Stop hook → hook_server receives content via POST
+4. Hook server calls notify_turn_complete() → sets _turn_event
+5. Cleaned output returned as response content
+```
+
+### status monitoring
+
+Poll `~/.claude/sessions/` directory for active session metadata. Parse project session files for recent output display.
+
 ## Configuration
 
 ```yaml
-# config.yaml
 server:
-  xiaozhi_endpoint: "wss://xiaozhi.me/mcp/agent/xxx"
+  xiaozhi_endpoint: "wss://api.xiaozhi.me/mcp/?token=..."
   reconnect_interval: 5
 
 claude:
-  binary: "claude"
-  permission_hook_timeout: 86400
   perm_dir: "/tmp/claude-xiaozhi-perms"
 
 status:
   poll_interval_sec: 5
+  exclude_paths: []
+  exclude_kinds: []
 ```
 
 ## Project Structure
 
 ```
 xiaozhi-claude-mcp/
-├── server.py              # WebSocket + MCP main process
-├── claude_driver.py       # subprocess wrapper for claude CLI
-├── permission_broker.py   # file semaphore read/write
-├── status_monitor.py      # polls ~/.claude/sessions/
-├── permission_hook.py     # PreToolUse hook script
-├── mcp_tools.py           # tool registration + handlers
-├── config.yaml            # configuration
-└── requirements.txt       # Python dependencies
+├── xiaozhi_claude_mcp/
+│   ├── server.py              # MCP server main process + tool handlers
+│   ├── pty_session.py         # persistent PTY claude subprocess wrapper
+│   ├── hook_server.py         # aiohttp server for Stop hook callbacks + web terminal
+│   ├── stop_hook.py           # Stop hook script (POSTs content to hook server)
+│   ├── permission_hook.py     # PermissionRequest hook script (record-only)
+│   ├── permission_broker.py   # file semaphore read/write for permission requests
+│   ├── status_monitor.py      # polls ~/.claude/sessions/ for session metadata
+│   ├── mcp_tools.py           # tool registration schemas
+│   ├── protocol.py            # JSON-RPC 2.0 encode/decode
+│   ├── transport.py           # WebSocket transport layer
+│   └── config.py              # dataclass config with YAML loading
+├── tests/
+│   ├── test_e2e.py            # end-to-end MCP + PTY pipeline tests
+│   ├── test_permission_broker.py
+│   ├── test_protocol.py
+│   ├── test_transport.py
+│   ├── test_status_monitor.py
+│   ├── test_mcp_tools.py
+│   ├── test_config.py
+│   └── test_integration.py
+└── config.yaml
 ```
 
 ## Dependencies
 
 - Python 3.10+
 - `websockets` — WebSocket client for xiaozhi.me connection
+- `aiohttp` — hook server HTTP endpoints
 - `pyyaml` — config parsing
-
-## Open Questions
-
-- How exactly does `claude status` expose session metadata? May need to fall back to filesystem polling.
-- Does xiaozhi.me require authentication on the MCP access point (token, API key)?
-- Claude Code `--resume` session ID format — need to verify.
-
-## Future
-
-- Replace file semaphore with direct MCP-based permission interception (approach B from brainstorming)
-- Stream Claude Code output tokens in real-time via notifications
-- Support multiple concurrent Claude Code sessions

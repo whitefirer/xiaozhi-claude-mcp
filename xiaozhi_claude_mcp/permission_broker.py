@@ -86,8 +86,10 @@ def scan_for_requests(perm_dir: str) -> list[PermissionRequest]:
     return requests
 
 
-def cleanup_request(perm_dir: str, permission_id: str) -> None:
+def cleanup_request(perm_dir: str, permission_id: str, keep_result: bool = False) -> None:
     for suffix in (REQUEST_SUFFIX, RESULT_SUFFIX):
+        if keep_result and suffix == RESULT_SUFFIX:
+            continue
         path = os.path.join(perm_dir, f"{permission_id}{suffix}")
         if os.path.exists(path):
             os.unlink(path)
