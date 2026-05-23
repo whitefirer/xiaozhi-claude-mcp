@@ -12,6 +12,7 @@
 </head>
 <body>
 <div id="terminal"></div>
+<button id="logout" style="position:fixed;top:8px;right:8px;z-index:10;background:#333;color:#aaa;border:1px solid #555;border-radius:4px;padding:4px 12px;cursor:pointer;font-size:12px;">退出</button>
 <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
 <script>
@@ -28,7 +29,7 @@ term.loadAddon(fit);
 term.open(document.getElementById('terminal'));
 fit.fit();
 
-const ws = new WebSocket(`ws://${location.host}/ws`);
+const ws = new WebSocket(`ws://${location.host}/ws${location.search}`);
 ws.binaryType = 'arraybuffer';
 ws.onmessage = (e) => {
   if (e.data instanceof ArrayBuffer) {
@@ -40,6 +41,10 @@ ws.onmessage = (e) => {
 ws.onclose = () => term.write('\r\n[Disconnected — refresh to reconnect]\r\n');
 term.onData((data) => ws.send(data));
 window.addEventListener('resize', () => fit.fit());
+document.getElementById('logout').onclick = async () => {
+  await fetch('/api/login/logout', { method: 'POST' });
+  window.location.href = '/login';
+};
 </script>
 </body>
 </html>

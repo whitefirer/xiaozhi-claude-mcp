@@ -6,6 +6,15 @@ import yaml
 class ServerConfig:
     xiaozhi_endpoint: str
     reconnect_interval: int = 5
+    env: str = "dev"
+    hook_port: int = 9999
+    hook_host: str = "127.0.0.1"
+    show_terminal: bool = True
+    allow_terminal_input: bool = True
+    terminal_token: str = ""
+    terminal_password: str = ""
+    enable_voice_auth: bool = False
+    enable_display_auth: bool = False
 
 
 @dataclass

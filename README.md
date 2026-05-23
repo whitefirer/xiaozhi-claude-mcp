@@ -67,14 +67,39 @@ Register two hooks in `~/.claude/settings.json`:
 
 The `XIAOZHI_PERMISSION_HOOK=1` env var is set automatically by the PTY session launcher. Only the PTY Claude triggers permission recording — your interactive Claude sessions are unaffected.
 
+Set `XIAOZHI_HOOK_PORT` in `~/.claude/settings.json` env section if you change the default port:
+
+```json
+"env": {
+  "XIAOZHI_HOOK_PORT": "9999"
+}
+```
+
 ### Web Terminal
 
-The hook server also serves a live terminal view at `http://127.0.0.1:9999`:
+The hook server also serves a live terminal view at `http://127.0.0.1:<hook_port>` (default 9999):
 
 - `GET /` — xterm.js web terminal showing real-time PTY output
 - `WS /ws` — WebSocket stream mirroring PTY output bytes
 
 Useful for debugging: watch what Claude Code is doing in the PTY session remotely.
+
+#### Terminal Authentication
+
+When `terminal_password` is set or xiaozhi verification is available, the terminal is protected by a login page with three auth methods:
+
+| Method | Flow | Config |
+|--------|------|--------|
+| **Password** | Enter password on login page | `terminal_password: "xxx"` |
+| **Voice (xiaozhi)** | Web shows code → speak to xiaozhi → xiaozhi approves | Enabled automatically when xiaozhi is connected |
+| **Display (xiaozhi)** | Tell xiaozhi you want to log in → xiaozhi shows code → type into web | Enabled automatically when xiaozhi is connected |
+
+All methods can be enabled simultaneously. The login page shows tabs for each enabled method. Voice and display verification codes are independent — they use separate code sets and different expiry times.
+
+Xiaozhi MCP tools for terminal auth:
+- `claude.prepare_voice_login()` — prepare to listen for voice verification code
+- `claude.voice_approve_login(code)` — approve a voice verification code
+- `claude.get_login_code()` — request a display verification code (shown on screen, not read aloud)
 
 ## MCP Tools
 
@@ -85,6 +110,9 @@ Useful for debugging: watch what Claude Code is doing in the PTY session remotel
 | `claude.get_result` | Poll async task — returns `pending` (with preview) or `done` |
 | `claude.approve` | Approve permission → sends `1\r` to PTY |
 | `claude.deny` | Deny permission → sends `3\r` to PTY |
+| `claude.prepare_voice_login` | Prepare to listen for voice verification code |
+| `claude.voice_approve_login` | Submit voice verification code |
+| `claude.get_login_code` | Request display verification code (show on screen) |
 
 ## Permission Flow
 
@@ -106,6 +134,12 @@ Only PTY Claude triggers recording (via `XIAOZHI_PERMISSION_HOOK=1` env var). In
 server:
   xiaozhi_endpoint: "wss://api.xiaozhi.me/mcp/?token=..."
   reconnect_interval: 5
+  env: "dev"                 # dev=auto-token if no auth, prod=require auth
+  hook_port: 9999            # optional, defaults to 9999
+  hook_host: "0.0.0.0"       # 0.0.0.0 for external terminal access (hooks stay local-only)
+  show_terminal: true         # serve web terminal (default true)
+  allow_terminal_input: true  # forward keystrokes from terminal to PTY (default true)
+  terminal_token: ""           # optional, protect terminal with ?token=xxx
 
 claude:
   perm_dir: "/tmp/claude-xiaozhi-perms"

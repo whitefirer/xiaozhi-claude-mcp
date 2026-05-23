@@ -18,8 +18,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger("stop_hook")
 
-HOOK_URL = "http://127.0.0.1:9999/hooks/claude-stop"
-HOOK_FAIL_URL = "http://127.0.0.1:9999/hooks/claude-stop-failure"
+_PORT = os.environ.get("XIAOZHI_HOOK_PORT", "9999")
+HOOK_URL = f"http://127.0.0.1:{_PORT}/hooks/claude-stop"
+HOOK_FAIL_URL = f"http://127.0.0.1:{_PORT}/hooks/claude-stop-failure"
 
 try:
     hook_input = json.loads(sys.stdin.read())

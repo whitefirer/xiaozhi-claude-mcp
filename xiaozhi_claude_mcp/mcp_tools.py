@@ -122,6 +122,58 @@ TOOL_SCHEMAS = [
         },
     },
     {
+        "name": "claude.prepare_voice_login",
+        "description": (
+            "【终端语音验证 - 准备听码】"
+            "触发词：语音验证/语音登录/我念验证码/听我念码/念给你听/我说验证码。"
+            "用户想通过念验证码来登录。调此工具后你会获得提示语，告诉用户开始念码。"
+            "用户念完后你听到6位字母数字码 → 调 claude.voice_approve_login(code=用户念的码)。"
+            "⚠️ 此工具只准备，不验证。必须等用户念完码后再调 voice_approve_login。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
+        "name": "claude.voice_approve_login",
+        "description": (
+            "【终端语音验证 - 提交念出的验证码】"
+            "前置：必须先调过 claude.prepare_voice_login。"
+            "用户念出6位字母数字验证码后，去掉空格、转大写，作为 code 参数提交。"
+            "返回：ok→已批准登录；error:expired→让用户刷新网页；error:invalid→让用户重念。"
+            "⚠️ 不要在用户没念码的时候调此工具！"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "用户念出的6位字母数字验证码（去空格、转大写）",
+                },
+            },
+            "required": ["code"],
+        },
+    },
+    {
+        "name": "claude.get_login_code",
+        "description": (
+            "【终端显示验证 - 生成4位数字码给用户看】"
+            "触发词：帮我登录/我要登录终端/显示验证码/给我验证码/怎么登录。"
+            "操作步骤（防止念出验证码）："
+            "1. 调 self.audio_speaker.set_volume(0) 将音量设为0"
+            "2. 调用此工具获取验证码"
+            "3. 屏幕上显示 display 字段，看屏幕不念！"
+            "4. 调 self.audio_speaker.set_volume(原音量) 恢复音量"
+            "⚠️ 如果无法控制音量，至少不要说 display 中的数字码，"
+            "只告诉用户'验证码已显示，请查看屏幕并输入'。"
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+        },
+    },
+    {
         "name": "claude.notify_permission",
         "description": (
             "[服务端推送通知，不要主动调用] "

@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Terminal Login</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+       background: #1a1a2e; color: #e0e0e0; display: flex; justify-content: center;
+       align-items: center; min-height: 100vh; }
+.card { position: relative; background: #16213e; border-radius: 12px; padding: 2rem;
+        width: 100%; max-width: 400px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+h1 { text-align: center; margin-bottom: 1.5rem; font-size: 1.4rem; color: #e94560; }
+.tabs { display: flex; margin-bottom: 1.5rem; border-bottom: 2px solid #0f3460; }
+.tab { flex: 1; text-align: center; padding: 0.6rem; cursor: pointer;
+       background: none; border: none; color: #8899aa; font-size: 0.9rem;
+       transition: color 0.2s; }
+.tab.active { color: #e94560; border-bottom: 2px solid #e94560; margin-bottom: -2px; }
+.panel { display: none; }
+.panel.active { display: block; }
+input[type="password"], input[type="text"] { width: 100%; padding: 0.75rem;
+       background: #0f3460; border: 1px solid #1a1a4e; border-radius: 8px;
+       color: #e0e0e0; font-size: 1rem; margin-bottom: 1rem; }
+.btn { width: 100%; padding: 0.75rem; border: none; border-radius: 8px;
+       font-size: 1rem; cursor: pointer; transition: opacity 0.2s; }
+.btn-primary { background: #e94560; color: #fff; }
+.btn-primary:hover { opacity: 0.9; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.hint { font-size: 0.85rem; color: #8899aa; margin: 0.5rem 0; text-align: center; }
+.error { color: #ff6b6b; font-size: 0.85rem; margin: 0.5rem 0; text-align: center; }
+.status { text-align: center; padding: 1rem 0; min-height: 3rem; }
+.spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid #0f3460;
+           border-top: 2px solid #e94560; border-radius: 50%;
+           animation: spin 0.8s linear infinite; margin-right: 0.5rem; vertical-align: middle; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.noauth { padding: 1.5rem; text-align: left; line-height: 1.8; font-size: 0.85rem; }
+.noauth b { color: #e94560; }
+
+/* lang switch */
+.lang-btn { position: absolute; top: 12px; right: 16px; background: #0f3460;
+            border: 1px solid #555; color: #889; border-radius: 4px;
+            padding: 2px 8px; cursor: pointer; font-size: 11px; font-weight: bold; }
+.lang-btn.active { color: #e94560; border-color: #e94560; }
+
+/* circular progress */
+.code-wrap { position: relative; width: 180px; height: 180px; margin: 0.5rem auto; overflow: visible; }
+.code-wrap-inner { width: 100%; height: 100%; position: relative; display: flex;
+    flex-direction: column; align-items: center; justify-content: center; overflow: visible; }
+.code-wrap svg { position: absolute; top: 0; left: 0; transform: rotate(-90deg); overflow: visible; }
+.code-wrap .code-text { position: relative; z-index: 1; font-size: 2rem; font-weight: bold;
+    letter-spacing: 0.15em; font-family: 'Menlo', 'Monaco', monospace; }
+.code-wrap .code-refresh { position: relative; z-index: 1; background: none; border: none;
+    color: #889; cursor: pointer; font-size: 0.8rem; padding: 2px 8px; margin-top: 2px; }
+.code-wrap .code-refresh:hover { color: #e94560; }
+@keyframes breathe { 0%,100% { opacity: 0.82; } 50% { opacity: 1; } }
+#voice-ring { animation: breathe 1s ease-in-out infinite; }
+@keyframes pulse-red { 0%,100% { transform: scale(1); } 50% { transform: scale(1.03); } }
+.code-wrap.glow-red .code-wrap-inner { animation: pulse-red 0.5s ease-in-out infinite; }
+</style>
+</head>
+<body>
+<div class="card">
+  <button id="lang-switch" class="lang-btn">中</button>
+  <h1 id="title"></h1>
+  <div class="tabs" id="tabs"></div>
+
+  <div class="panel" id="panel-password">
+    <input type="password" id="pw" placeholder="">
+    <button class="btn btn-primary" id="btn-pw"></button>
+    <div class="error" id="err-pw"></div>
+  </div>
+
+  <div class="panel" id="panel-voice">
+    <div class="hint" id="voice-hint"></div>
+    <div class="code-wrap">
+      <div class="code-wrap-inner">
+        <svg width="180" height="180" viewBox="0 0 180 180">
+          <circle cx="90" cy="90" r="80" fill="none" stroke="#0f3460" stroke-width="6"/>
+          <circle id="voice-ring" cx="90" cy="90" r="80" fill="none" stroke="#22C55D"
+                  stroke-width="6" stroke-linecap="round"
+                  stroke-dasharray="502.65" stroke-dashoffset="0"/>
+        </svg>
+        <div class="code-text" id="voice-code">------</div>
+        <button class="code-refresh" id="btn-voice-refresh">点击刷新</button>
+      </div>
+    </div>
+    <div class="status">
+      <span class="spinner" id="voice-spin"></span><span id="voice-status-text"></span>
+    </div>
+    <div class="error" id="err-voice"></div>
+  </div>
+
+  <div class="panel" id="panel-display">
+    <div class="hint" id="disp-hint"></div>
+    <input type="text" id="disp-code" placeholder="" maxlength="4" inputmode="numeric" pattern="[0-9]*">
+    <button class="btn btn-primary" id="btn-disp"></button>
+    <div class="status" id="disp-status" style="display:none">
+      <span class="spinner"></span>...
+    </div>
+    <div class="error" id="err-disp"></div>
+  </div>
+</div>
+<!-- AUTH_CONFIG -->
+<script>
+const AUTH = window.__AUTH__ || {};
+let _lang = localStorage.getItem('xz_lang') || (navigator.language.startsWith('zh') ? 'zh' : 'en');
+
+function _makeLang(lang) {
+  if (lang === 'zh') return {
+    title: 'Claude Code 终端',
+    password: '密码登录', voice: '语音验证', display: '显码验证',
+    pwPlaceholder: '输入终端密码', pwBtn: '登录',
+    voiceHint: '先对小智说「语音验证」，小智准备好后会让你念码',
+    voiceWaiting: '等待小智批准...', voiceExpired: '已过期，请重新生成',
+    voiceApproved: '已批准，跳转中...', voiceRefresh: '点击刷新',
+    dispHint: '对小智说「我要登录终端」，小智会显示验证码',
+    dispPlaceholder: '输入小智显示的验证码', dispBtn: '验证',
+    noAuthTitle: '终端未配置登录方式',
+    tokenInvalid: 'token 无效，请检查 URL',
+    noAuthToken: '方式一：dev 模式使用 token 访问',
+    noAuthTokenHint: '启动日志中查找 auto-generated terminal token',
+    noAuthConfig: '方式二：配置认证（config.yaml server 段）',
+    loginFailed: '登录失败', networkError: '网络错误',
+    verifyFailed: '验证失败', enterCode: '请输入验证码',
+  };
+  return {
+    title: 'Claude Code Terminal',
+    password: 'Password', voice: 'Voice Verify', display: 'Code Verify',
+    pwPlaceholder: 'Enter terminal password', pwBtn: 'Login',
+    voiceHint: 'Say "Voice verify" to Xiaozhi, then read the code',
+    voiceWaiting: 'Waiting for Xiaozhi...', voiceExpired: 'Expired, regenerate',
+    voiceApproved: 'Approved, redirecting...', voiceRefresh: 'Refresh',
+    dispHint: 'Say "I want to log in" to Xiaozhi, it will show a code',
+    dispPlaceholder: 'Enter code from Xiaozhi', dispBtn: 'Verify',
+    noAuthTitle: 'No login method configured',
+    tokenInvalid: 'Invalid token, check URL',
+    noAuthToken: 'Option 1: Use token in dev mode',
+    noAuthTokenHint: 'Find auto-generated terminal token in startup logs',
+    noAuthConfig: 'Option 2: Configure auth (config.yaml server section)',
+    loginFailed: 'Login failed', networkError: 'Network error',
+    verifyFailed: 'Verification failed', enterCode: 'Please enter the code',
+  };
+}
+let L = _makeLang(_lang);
+
+const RING = 2 * Math.PI * 80; // ~502.65
+
+function ringZone(pct, now) {
+  if (pct >= 0.5) return ['#22C55D', 'none'];
+  // amber 1.2s period, red 0.6s period — matches original CSS animation timing
+  const period = pct > 0.2 ? 191 : 95;
+  const breath = 1 + 0.3 * Math.sin(now / period);
+  if (pct > 0.2) {
+    const t = (0.5 - pct) / 0.3;
+    const r = Math.round(34 + (251-34)*t);
+    const g = Math.round(197 + (191-197)*t);
+    const b = Math.round(93 + (36-93)*t);
+    const glowR = Math.max(2, Math.round(t * 8 * breath));
+    return [`rgb(${r},${g},${b})`, `drop-shadow(0 0 ${glowR}px rgb(${r},${g},${b}))`];
+  }
+  const t = Math.min(1, (0.2 - pct) / 0.2);
+  const r = Math.round(251 + (239-251)*t);
+  const g = Math.round(191 + (68-191)*t);
+  const b = Math.round(36 + (68-36)*t);
+  const glowR = Math.round((4 + t * 14) * breath);
+  return [`rgb(${r},${g},${b})`, `drop-shadow(0 0 ${glowR}px rgb(${r},${g},${b}))`];
+}
+
+function ringGlowClass(pct) {
+  return pct < 0.2 ? 'glow-red' : '';
+}
+
+function showPanels(keepTab) {
+  const tabs = document.getElementById('tabs');
+  const methods = [];
+  if (AUTH.hasPassword) methods.push({ id: 'password', label: L.password });
+  if (AUTH.hasVoice)    methods.push({ id: 'voice',    label: L.voice });
+  if (AUTH.hasDisplay)  methods.push({ id: 'display',  label: L.display });
+
+  if (methods.length === 0) {
+    document.getElementById('panel-password').classList.add('active');
+    document.getElementById('panel-password').innerHTML = location.search.includes('token=')
+      ? `<div class="hint" style="padding:2rem 0">${L.tokenInvalid}</div>`
+      : `<div class="noauth"><b>${L.noAuthTitle}</b><br><br>
+          <b>${L.noAuthToken}</b><br>${L.noAuthTokenHint}<br>http://host:port/?token=xxx<br><br>
+          <b>${L.noAuthConfig}</b><br>
+          terminal_password: "password"<br>enable_voice_auth: true<br>enable_display_auth: true</div>`;
+    return;
+  }
+
+  const active = keepTab && methods.find(m => m.id === keepTab) ? keepTab : methods[0].id;
+  methods.forEach((m, i) => {
+    const t = document.createElement('button');
+    t.className = 'tab' + (m.id === active ? ' active' : '');
+    t.textContent = m.label;
+    t.dataset.panel = m.id;
+    t.onclick = () => switchTab(m.id);
+    tabs.appendChild(t);
+  });
+  switchTab(active);
+}
+
+function switchTab(id) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.panel === id));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + id));
+  if (id === 'voice') startVoiceChallenge();
+}
+
+async function sha256(msg) {
+  const buf = new TextEncoder().encode(msg);
+  const hash = await crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+document.getElementById('btn-pw').onclick = async () => {
+  const pw = document.getElementById('pw').value;
+  const err = document.getElementById('err-pw');
+  err.textContent = '';
+  try {
+    const cr = await fetch('/api/login/challenge');
+    const c = await cr.json();
+    if (!c.ok) { err.textContent = c.error; return; }
+    const hash = await sha256(c.nonce + pw);
+    const r = await fetch('/api/login/password', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nonce: c.nonce, hash })
+    });
+    const d = await r.json();
+    if (d.ok) { window.location.href = '/'; }
+    else { err.textContent = d.error || L.loginFailed; }
+  } catch (e) { err.textContent = L.networkError; }
+};
+
+let _voiceTimer = null, _voicePoll = null;
+
+async function startVoiceChallenge() {
+  const display = document.getElementById('voice-code');
+  const statText = document.getElementById('voice-status-text');
+  const spin = document.getElementById('voice-spin');
+  const ring = document.getElementById('voice-ring');
+  const wrap = document.querySelector('.code-wrap');
+  const err = document.getElementById('err-voice');
+  if (_voiceTimer) clearInterval(_voiceTimer);
+  if (_voicePoll) clearInterval(_voicePoll);
+  wrap.className = "code-wrap";
+  err.textContent = '';
+
+  try {
+    const r = await fetch('/api/login/voice/create', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) { err.textContent = d.error; return; }
+    display.textContent = d.display;
+
+    const total = d.expires_in || 60;
+    let remaining = total;
+    const deadline = Date.now() + remaining * 1000;
+    ring.setAttribute('stroke-dasharray', RING);
+    ring.setAttribute('stroke-dashoffset', '0');
+    ring.setAttribute('stroke', '#22C55D');
+    spin.style.display = 'inline-block';
+    statText.innerHTML = `${L.voiceWaiting} <b style="color:#22C55D">${remaining}s</b>`;
+
+    _voiceTimer = setInterval(() => {
+      remaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      const pct = remaining / total;
+      const now = Date.now();
+      const offset = RING * (1 - pct);
+      ring.setAttribute('stroke-dashoffset', offset);
+      const [col, filt] = ringZone(pct, now);
+      ring.setAttribute('stroke', col);
+      ring.style.filter = filt;
+      wrap.className = 'code-wrap' + (pct < 0.2 ? ' glow-red' : '');
+      statText.innerHTML = `${L.voiceWaiting} <b style="color:${col}">${remaining}s</b>`;
+      if (remaining <= 0) clearInterval(_voiceTimer);
+    }, 200);
+
+    _voicePoll = setInterval(async () => {
+      if (Date.now() > deadline) {
+        clearInterval(_voicePoll); clearInterval(_voiceTimer);
+        startVoiceChallenge();
+        return;
+      }
+      try {
+        const sr = await fetch(`/api/login/voice/check?challenge_id=${d.challenge_id}`);
+        const sd = await sr.json();
+        if (sd.approved) {
+          clearInterval(_voicePoll); clearInterval(_voiceTimer);
+          spin.style.display = 'none';
+          statText.innerHTML = `&#10004; ${L.voiceApproved}`;
+          setTimeout(() => window.location.href = '/', 500);
+        }
+      } catch (_) {}
+    }, 2000);
+  } catch (e) { err.textContent = L.networkError; }
+}
+
+document.getElementById('btn-voice-refresh').onclick = startVoiceChallenge;
+
+document.getElementById('btn-disp').onclick = async () => {
+  const code = document.getElementById('disp-code').value;
+  const err = document.getElementById('err-disp');
+  const stat = document.getElementById('disp-status');
+  err.textContent = '';
+  if (!code) { err.textContent = L.enterCode; return; }
+  stat.style.display = 'block';
+  try {
+    const r = await fetch('/api/login/display/verify', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code })
+    });
+    const d = await r.json();
+    stat.style.display = 'none';
+    if (d.ok) { window.location.href = '/'; }
+    else { err.textContent = d.error || L.verifyFailed; }
+  } catch (e) { stat.style.display = 'none'; err.textContent = L.networkError; }
+};
+
+function applyI18n() {
+  document.title = L.title;
+  document.getElementById('title').textContent = L.title;
+  document.getElementById('pw').placeholder = L.pwPlaceholder;
+  document.getElementById('btn-pw').textContent = L.pwBtn;
+  document.getElementById('btn-voice-refresh').textContent = L.voiceRefresh;
+  document.getElementById('disp-hint').textContent = L.dispHint;
+  document.getElementById('disp-code').placeholder = L.dispPlaceholder;
+  document.getElementById('btn-disp').textContent = L.dispBtn;
+  document.getElementById('lang-switch').textContent = _lang === 'zh' ? '中文' : 'EN';
+}
+
+document.getElementById('lang-switch').onclick = () => {
+  const activeTab = document.querySelector('.tab.active');
+  const activeId = activeTab ? activeTab.dataset.panel : null;
+  _lang = _lang === 'zh' ? 'en' : 'zh';
+  localStorage.setItem('xz_lang', _lang);
+  L = _makeLang(_lang);
+  applyI18n();
+  document.getElementById('tabs').innerHTML = '';
+  showPanels(activeId);
+};
+
+applyI18n();
+showPanels();
+</script>
+</body>
+</html>

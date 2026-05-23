@@ -24,6 +24,7 @@ from xiaozhi_claude_mcp.transport import XiaozhiTransport, TransportState
 from xiaozhi_claude_mcp.mcp_tools import get_tools_list, make_text_content
 from xiaozhi_claude_mcp.pty_session import AsyncPTYSession
 from xiaozhi_claude_mcp.hook_server import HookServer
+from xiaozhi_claude_mcp.terminal_auth import TerminalAuth
 from xiaozhi_claude_mcp.permission_broker import (
     scan_for_requests,
     write_permission_result,
@@ -38,6 +39,10 @@ logging.basicConfig(
 logger = logging.getLogger("server")
 
 
+def _request_exists(perm_dir: str, permission_id: str) -> bool:
+    return os.path.exists(os.path.join(perm_dir, f"{permission_id}.json"))
+
+
 class XiaozhiClaudeMCPServer:
     def __init__(self, config_path: str):
         self.config = load_config(config_path)
@@ -50,7 +55,36 @@ class XiaozhiClaudeMCPServer:
             exclude_kinds=self.config.status.exclude_kinds,
         )
         self._pty: AsyncPTYSession | None = None
-        self._hook_server = HookServer()
+        cfg = self.config.server
+        self._terminal_auth = TerminalAuth(
+            password=cfg.terminal_password,
+            enable_voice=cfg.enable_voice_auth,
+            enable_display=cfg.enable_display_auth,
+        ) if (cfg.terminal_password or cfg.enable_voice_auth
+              or cfg.enable_display_auth) else None
+
+        # Dev mode: auto-generate token if no auth configured
+        terminal_token = cfg.terminal_token
+        if not self._terminal_auth and not terminal_token and cfg.show_terminal:
+            if cfg.env == "dev":
+                import secrets
+                terminal_token = secrets.token_hex(8)
+                logger.warning("Dev mode: auto-generated terminal token: %s "
+                             "(use ?token=%s)", terminal_token, terminal_token)
+            else:
+                logger.warning("Prod mode: terminal is open with NO authentication! "
+                             "Set terminal_password, enable_voice_auth, "
+                             "enable_display_auth, or terminal_token.")
+
+        self._hook_server = HookServer(
+            host=self.config.server.hook_host,
+            port=self.config.server.hook_port,
+            show_terminal=self.config.server.show_terminal,
+            allow_terminal_input=self.config.server.allow_terminal_input,
+            terminal_token=terminal_token,
+            allow_token=(cfg.env == "dev"),
+            terminal_auth=self._terminal_auth,
+        )
         self._running = False
         self._pending_perm_check_task: asyncio.Task | None = None
         self._pending_tool_tasks: set[asyncio.Task] = set()
@@ -273,6 +307,8 @@ class XiaozhiClaudeMCPServer:
 
         elif name == "claude.approve":
             perm_id = args["permission_id"]
+            if not _request_exists(self.config.claude.perm_dir, perm_id):
+                return {"ok": False, "error": f"权限请求不存在或已处理: {perm_id}"}
             write_permission_result(self.config.claude.perm_dir, perm_id, True)
             cleanup_request(self.config.claude.perm_dir, perm_id, keep_result=True)
             asyncio.create_task(self._auto_answer_pty(b"1\r"))
@@ -280,10 +316,47 @@ class XiaozhiClaudeMCPServer:
 
         elif name == "claude.deny":
             perm_id = args["permission_id"]
+            if not _request_exists(self.config.claude.perm_dir, perm_id):
+                return {"ok": False, "error": f"权限请求不存在或已处理: {perm_id}"}
             write_permission_result(self.config.claude.perm_dir, perm_id, False)
             cleanup_request(self.config.claude.perm_dir, perm_id, keep_result=True)
             asyncio.create_task(self._auto_answer_pty(b"3\r"))
             return {"ok": True}
+
+        elif name == "claude.prepare_voice_login":
+            if not self._terminal_auth or not self._terminal_auth.has_voice:
+                return {"ok": False, "error": "语音验证未启用"}
+            return {
+                "ok": True,
+                "message": (
+                    "好的，请念出网页上显示的6位字母数字验证码。"
+                    "验证码60秒有效，过期后需刷新网页重新生成。"
+                ),
+                "expire_seconds": 60,
+            }
+
+        elif name == "claude.voice_approve_login":
+            if not self._terminal_auth:
+                return {"ok": False, "error": "终端验证未启用"}
+            spoken_code = args.get("code", "")
+            challenge_id, error = self._terminal_auth.approve_voice(spoken_code)
+            if challenge_id:
+                return {"ok": True, "message": "终端语音验证已批准"}
+            if error == "expired":
+                return {"ok": False, "error": (
+                    "验证码已过期（60秒有效）。请让用户刷新网页重新生成验证码。"
+                )}
+            return {"ok": False, "error": (
+                "验证码错误，请确认用户念的字母和数字是否正确，再试一次。"
+            )}
+
+        elif name == "claude.get_login_code":
+            if not self._terminal_auth:
+                return {"ok": False, "error": "终端验证未启用"}
+            result = self._terminal_auth.request_display_challenge()
+            if result:
+                return result
+            return {"ok": False, "error": "无法生成验证码"}
 
         elif name in ("claude.notify_permission", "claude.notify_turn"):
             return {"ok": True}
@@ -291,14 +364,14 @@ class XiaozhiClaudeMCPServer:
         else:
             raise ValueError(f"Unknown tool: {name}")
 
+    # ── send_message via PTY ───────────────────────────────────
+
     async def _auto_answer_pty(self, keys: bytes, delay: float = 0.5) -> None:
         """Send keystroke to PTY after a delay, for auto-answering permission dialogs."""
         await asyncio.sleep(delay)
         if self._pty and self._pty.alive:
             self._pty.write_raw(keys)
             logger.info("Auto-answered PTY dialog with keys=%r", keys)
-
-    # ── send_message via PTY ───────────────────────────────────
 
     async def _do_send_message(self, prompt: str, session_id: str,
                                max_turns: int = 2) -> dict:
