@@ -22,9 +22,10 @@ from xiaozhi_claude_mcp.protocol import (
 )
 from xiaozhi_claude_mcp.transport import XiaozhiTransport, TransportState
 from xiaozhi_claude_mcp.mcp_tools import get_tools_list, make_text_content
+from xiaozhi_auth_mcp import XiaoZhiAuth
+from xiaozhi_auth_mcp.tools import get_tool_schemas, create_handlers as create_auth_handlers
 from xiaozhi_claude_mcp.pty_session import AsyncPTYSession
 from xiaozhi_claude_mcp.hook_server import HookServer
-from xiaozhi_claude_mcp.terminal_auth import TerminalAuth
 from xiaozhi_claude_mcp.permission_broker import (
     scan_for_requests,
     write_permission_result,
@@ -56,16 +57,24 @@ class XiaozhiClaudeMCPServer:
         )
         self._pty: AsyncPTYSession | None = None
         cfg = self.config.server
-        self._terminal_auth = TerminalAuth(
-            password=cfg.terminal_password,
-            enable_voice=cfg.enable_voice_auth,
-            enable_display=cfg.enable_display_auth,
-        ) if (cfg.terminal_password or cfg.enable_voice_auth
-              or cfg.enable_display_auth) else None
+        self._auth_redirect_url = cfg.auth_server_url or ""
+
+        if self._auth_redirect_url:
+            # Redirect mode: delegate auth to external Auth Server
+            self._terminal_auth = None
+        else:
+            # Library mode: local XiaoZhiAuth
+            self._terminal_auth = XiaoZhiAuth(
+                password=cfg.terminal_password,
+                enable_voice=cfg.enable_voice_auth,
+                enable_display=cfg.enable_display_auth,
+            ) if (cfg.terminal_password or cfg.enable_voice_auth
+                  or cfg.enable_display_auth) else None
 
         # Dev mode: auto-generate token if no auth configured
         terminal_token = cfg.terminal_token
-        if not self._terminal_auth and not terminal_token and cfg.show_terminal:
+        if not self._terminal_auth and not self._auth_redirect_url \
+           and not terminal_token and cfg.show_terminal:
             if cfg.env == "dev":
                 import secrets
                 terminal_token = secrets.token_hex(8)
@@ -84,6 +93,7 @@ class XiaozhiClaudeMCPServer:
             terminal_token=terminal_token,
             allow_token=(cfg.env == "dev"),
             terminal_auth=self._terminal_auth,
+            auth_redirect_url=self._auth_redirect_url,
         )
         self._running = False
         self._pending_perm_check_task: asyncio.Task | None = None
@@ -180,9 +190,10 @@ class XiaozhiClaudeMCPServer:
             })
 
         elif method == "tools/list":
-            await self.transport.send_response(req.id, {
-                "tools": get_tools_list(),
-            })
+            tools = get_tools_list()
+            if not self._auth_redirect_url:
+                tools += get_tool_schemas(prefix="claude")
+            await self.transport.send_response(req.id, {"tools": tools})
 
         elif method == "tools/call":
             tool_name = req.params.get("name", "")
@@ -323,40 +334,13 @@ class XiaozhiClaudeMCPServer:
             asyncio.create_task(self._auto_answer_pty(b"3\r"))
             return {"ok": True}
 
-        elif name == "claude.prepare_voice_login":
-            if not self._terminal_auth or not self._terminal_auth.has_voice:
-                return {"ok": False, "error": "语音验证未启用"}
-            return {
-                "ok": True,
-                "message": (
-                    "好的，请念出网页上显示的6位字母数字验证码。"
-                    "验证码60秒有效，过期后需刷新网页重新生成。"
-                ),
-                "expire_seconds": 60,
-            }
-
-        elif name == "claude.voice_approve_login":
-            if not self._terminal_auth:
-                return {"ok": False, "error": "终端验证未启用"}
-            spoken_code = args.get("code", "")
-            challenge_id, error = self._terminal_auth.approve_voice(spoken_code)
-            if challenge_id:
-                return {"ok": True, "message": "终端语音验证已批准"}
-            if error == "expired":
-                return {"ok": False, "error": (
-                    "验证码已过期（60秒有效）。请让用户刷新网页重新生成验证码。"
-                )}
-            return {"ok": False, "error": (
-                "验证码错误，请确认用户念的字母和数字是否正确，再试一次。"
-            )}
-
-        elif name == "claude.get_login_code":
-            if not self._terminal_auth:
-                return {"ok": False, "error": "终端验证未启用"}
-            result = self._terminal_auth.request_display_challenge()
-            if result:
-                return result
-            return {"ok": False, "error": "无法生成验证码"}
+        elif name in ("claude.prepare_voice_login", "claude.voice_approve_login",
+                      "claude.get_login_code"):
+            handlers = create_auth_handlers(self._terminal_auth, prefix="claude")
+            handler = handlers.get(name)
+            if handler:
+                return await handler(args)
+            raise ValueError(f"Unknown auth tool: {name}")
 
         elif name in ("claude.notify_permission", "claude.notify_turn"):
             return {"ok": True}

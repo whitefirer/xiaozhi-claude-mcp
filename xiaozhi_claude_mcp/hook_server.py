@@ -55,14 +55,15 @@ class HookServer:
     def __init__(self, host: str = "127.0.0.1", port: int = 9999,
                  show_terminal: bool = True, allow_terminal_input: bool = True,
                  terminal_token: str = "", allow_token: bool = True,
-                 terminal_auth=None):
+                 terminal_auth=None, auth_redirect_url: str = ""):
         self.host = host
         self.port = port
         self.show_terminal = show_terminal
         self.allow_terminal_input = allow_terminal_input
         self.terminal_token = terminal_token
         self._allow_token = allow_token
-        self._auth = terminal_auth  # TerminalAuth instance or None
+        self._auth = terminal_auth
+        self._auth_redirect_url = auth_redirect_url
         self._app = web.Application()
         self._runner: web.AppRunner | None = None
         self._pty_session = None
@@ -302,7 +303,29 @@ class HookServer:
     # ── web terminal ───────────────────────────────────────
 
     async def _handle_index(self, request: web.Request) -> web.Response:
+        # Handle redirect-mode token callback
+        token = request.query.get("token", "")
+        if token and self._auth_redirect_url and self._auth:
+            from aiohttp import ClientSession
+            try:
+                async with ClientSession() as sess:
+                    async with sess.get(
+                        f"{self._auth_redirect_url}/api/verify?token={token}"
+                    ) as r:
+                        data = await r.json()
+                if data.get("ok"):
+                    resp = web.HTTPFound("/")
+                    resp.set_cookie("xz_term_sess", token, httponly=True,
+                                    samesite="Strict", max_age=3600)
+                    return resp
+            except Exception:
+                pass
+
         if not self._has_terminal_access(request):
+            if self._auth_redirect_url:
+                back = f"http://{request.host}/"
+                raise web.HTTPFound(
+                    f"{self._auth_redirect_url}/login?redirect_uri={back}")
             raise web.HTTPFound("/login")
         path = os.path.join(WEB_DIR, "index.html")
         try:

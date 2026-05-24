@@ -15,6 +15,7 @@ class ServerConfig:
     terminal_password: str = ""
     enable_voice_auth: bool = False
     enable_display_auth: bool = False
+    auth_server_url: str = ""
 
 
 @dataclass
