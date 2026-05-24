@@ -64,6 +64,7 @@ class HookServer:
         self._allow_token = allow_token
         self._auth = terminal_auth
         self._auth_redirect_url = auth_redirect_url
+        self._redirect_sessions: set[str] = set()  # auth server tokens in redirect mode
         self._app = web.Application()
         self._runner: web.AppRunner | None = None
         self._pty_session = None
@@ -130,7 +131,9 @@ class HookServer:
     # ── auth helpers ───────────────────────────────────────
 
     def _has_terminal_access(self, request: web.Request) -> bool:
-        """Check if request has terminal access via cookie, token (dev only), or no auth."""
+        """Check if request has terminal access."""
+        if self._auth_redirect_url:
+            return _read_cookie(request) in self._redirect_sessions
         if self._auth and self._auth.check_session(_read_cookie(request)):
             return True
         if self._allow_token and self._check_terminal_token(request):
@@ -203,6 +206,11 @@ class HookServer:
     # ── login page ─────────────────────────────────────────
 
     async def _handle_login_page(self, request: web.Request) -> web.Response:
+        if self._auth_redirect_url:
+            back = f"http://{request.host}/"
+            raise web.HTTPFound(
+                f"{self._auth_redirect_url}/login?redirect_uri={back}"
+                f"&title=Claude Code 终端")
         path = os.path.join(WEB_DIR, "login.html")
         try:
             with open(path) as f:
@@ -305,7 +313,7 @@ class HookServer:
     async def _handle_index(self, request: web.Request) -> web.Response:
         # Handle redirect-mode token callback
         token = request.query.get("token", "")
-        if token and self._auth_redirect_url and self._auth:
+        if token and self._auth_redirect_url:
             from aiohttp import ClientSession
             try:
                 async with ClientSession() as sess:
@@ -314,6 +322,7 @@ class HookServer:
                     ) as r:
                         data = await r.json()
                 if data.get("ok"):
+                    self._redirect_sessions.add(token)
                     resp = web.HTTPFound("/")
                     resp.set_cookie("xz_term_sess", token, httponly=True,
                                     samesite="Strict", max_age=3600)
@@ -325,7 +334,8 @@ class HookServer:
             if self._auth_redirect_url:
                 back = f"http://{request.host}/"
                 raise web.HTTPFound(
-                    f"{self._auth_redirect_url}/login?redirect_uri={back}")
+                    f"{self._auth_redirect_url}/login?redirect_uri={back}"
+                    f"&title=Claude Code 终端")
             raise web.HTTPFound("/login")
         path = os.path.join(WEB_DIR, "index.html")
         try:

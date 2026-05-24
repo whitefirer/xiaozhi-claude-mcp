@@ -1,13 +1,22 @@
 server:
-  xiaozhi_endpoint: "wss://api.xiaozhi.me/mcp/?token=YOUR_JWT_TOKEN"
+  xiaozhi_endpoint: "wss://api.xiaozhi.me/mcp/?token=YOUR_TOKEN"
   reconnect_interval: 5
+  env: "dev"
+  hook_port: 9999
+  hook_host: "127.0.0.1"
+  show_terminal: true
+  allow_terminal_input: true
+  terminal_token: ""
+  terminal_password: ""
+  enable_voice_auth: false
+  enable_display_auth: false
+  # 留空=库模式(本地XiaoZhiAuth), 填URL=redirect模式(外部Auth Server)
+  auth_server_url: ""
 
 claude:
-  binary: "claude"
   perm_dir: "/tmp/claude-xiaozhi-perms"
 
 status:
   poll_interval_sec: 5
-  exclude_paths:
-    - claude-mem
+  exclude_paths: []
   exclude_kinds: []
